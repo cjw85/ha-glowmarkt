@@ -78,6 +78,28 @@ def _glow_response_timezone(offset_minutes: int) -> timezone:
     return timezone(-timedelta(minutes=offset_minutes))
 
 
+def _epoch_to_utc_datetime(value: int | float | None) -> datetime | None:
+    """Convert a Glow epoch timestamp to a UTC datetime."""
+    if value is None:
+        return None
+    return datetime.fromtimestamp(float(value), tz=timezone.utc)
+
+
+def _iso_datetime_string_to_datetime(value: str) -> datetime:
+    """Convert a Glow ISO-like timestamp string to a timezone-aware datetime."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _coerce_reading_value(value: Any) -> float | int | str:
+    """Convert a Glow reading value to a numeric type when possible."""
+    if isinstance(value, (float, int)):
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _local_day_boundary_after(value: datetime) -> datetime:
     """Return the next local midnight after a timezone-aware datetime."""
     return (value + timedelta(days=1)).replace(
@@ -193,6 +215,16 @@ def _extract_postal_code(payload: dict[str, Any]) -> str | None:
             if address.get(key):
                 return address[key]
     return None
+
+
+def _resource_source_text(resource) -> str:
+    """Return lower-cased resource text for source heuristics."""
+    return " ".join(
+        filter(
+            None,
+            [getattr(resource, "name", None), getattr(resource, "description", None)],
+        )
+    ).lower()
 
 
 @dataclass(slots=True)
@@ -376,11 +408,61 @@ class GlowResource:
         self.description = payload.get("description")
         self.base_unit = payload.get("baseUnit") or payload.get("base_unit")
 
+    @property
+    def is_dcc_sourced(self) -> bool:
+        """Return whether this resource looks DCC-backed."""
+        text = _resource_source_text(self)
+        return "dcc" in text or "profile read" in text
+
+    def _resource_json(self, suffix: str):
+        """Fetch and normalize a resource-specific JSON document."""
+        return self.client._request_json("GET", f"resource/{self.id}/{suffix}")
+
+    def _resource_timestamp(self, suffix: str, field_name: str) -> datetime | None:
+        """Fetch a resource timestamp endpoint and decode the epoch field."""
+        payload = self._resource_json(suffix)
+        data = payload.get("data") or {}
+        return _epoch_to_utc_datetime(data.get(field_name))
+
+    def get_current(self):
+        """Fetch the current reading payload for this resource."""
+        return _namespace(self._resource_json("current"))
+
+    def get_first_time(self) -> datetime | None:
+        """Fetch the first available reading timestamp for this resource."""
+        return self._resource_timestamp("first-time", "firstTs")
+
+    def get_last_time(self) -> datetime | None:
+        """Fetch the most recent available reading timestamp for this resource."""
+        return self._resource_timestamp("last-time", "lastTs")
+
+    def get_meter_reading(self):
+        """Fetch the resource's cumulative meter reading payload."""
+        return _namespace(self._resource_json("meterread"))
+
     def get_tariff(self):
         """Fetch the current tariff document for this resource."""
-        return _namespace(
-            self.client._request_json("GET", f"resource/{self.id}/tariff")
-        )
+        return _namespace(self._resource_json("tariff"))
+
+    def get_tariff_list(self):
+        """Fetch the resource's tariff-history payload."""
+        return _namespace(self._resource_json("tariff-list"))
+
+    def catch_up(self):
+        """Trigger one DCC catch-up request for this resource."""
+        return _namespace(self._resource_json("catchup"))
+
+    def get_daily_consumption_log(self):
+        """Fetch the DCC daily consumption log for this resource."""
+        payload = self._resource_json("daily-consumption-log")
+        unit_name = payload.get("units") or getattr(self, "base_unit", "unknown")
+        return [
+            [
+                _iso_datetime_string_to_datetime(timestamp),
+                GlowReadingValue(_coerce_reading_value(value), unit_name),
+            ]
+            for timestamp, value in payload.get("data", [])
+        ]
 
     def get_readings(
         self,

@@ -346,3 +346,150 @@ def test_tariff_payload_is_normalized_to_snake_case_attributes() -> None:
 
     assert tariff.current_rates.standing_charge.value == 34.5
     assert tariff.current_rates.rate.value == 12.3
+
+
+def test_additional_resource_endpoints_decode_timestamps_and_catchup() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(200, {"token": "token-123"}),
+            FakeResponse(200, {"data": {"lastTs": 1751731200}}),
+            FakeResponse(200, {"data": {"firstTs": 1751328000}}),
+            FakeResponse(200, {"data": {"valid": True}}),
+        ]
+    )
+    client = glow_api.GlowClient(
+        "user@example.com",
+        "secret",
+        base_url="https://example.test/api/v0-1/",
+        session=session,
+    )
+    resource = glow_api.GlowResource(
+        client,
+        None,
+        {
+            "resourceId": "resource-1",
+            "name": "electricity",
+            "classifier": "electricity.consumption",
+            "description": "electricity consumption DCC SM profile reads",
+            "baseUnit": "kWh",
+        },
+    )
+
+    assert resource.is_dcc_sourced is True
+    assert resource.get_last_time() == dt.datetime(
+        2025, 7, 5, 16, 0, tzinfo=dt.timezone.utc
+    )
+    assert resource.get_first_time() == dt.datetime(
+        2025, 7, 1, 0, 0, tzinfo=dt.timezone.utc
+    )
+
+    catchup = resource.catch_up()
+
+    assert catchup.data.valid is True
+    assert [call["url"] for call in session.calls[1:]] == [
+        "https://example.test/api/v0-1/resource/resource-1/last-time",
+        "https://example.test/api/v0-1/resource/resource-1/first-time",
+        "https://example.test/api/v0-1/resource/resource-1/catchup",
+    ]
+
+
+def test_current_meter_and_tariff_list_payloads_are_normalized() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(200, {"token": "token-123"}),
+            FakeResponse(
+                200,
+                {
+                    "resourceTypeId": "type-1",
+                    "data": [[1751731200, 321]],
+                },
+            ),
+            FakeResponse(
+                200,
+                {
+                    "units": "kWh",
+                    "data": [[1751731200, 12345.6]],
+                },
+            ),
+            FakeResponse(
+                200,
+                {
+                    "data": [
+                        {
+                            "displayName": "Standard",
+                            "effectiveDate": "2026-07-01 00:00:00",
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    client = glow_api.GlowClient(
+        "user@example.com",
+        "secret",
+        base_url="https://example.test/api/v0-1/",
+        session=session,
+    )
+    resource = glow_api.GlowResource(
+        client,
+        None,
+        {
+            "resourceId": "resource-1",
+            "name": "electricity",
+            "classifier": "electricity.consumption",
+            "description": "electricity consumption",
+            "baseUnit": "kWh",
+        },
+    )
+
+    current = resource.get_current()
+    meter_reading = resource.get_meter_reading()
+    tariff_list = resource.get_tariff_list()
+
+    assert current.resource_type_id == "type-1"
+    assert current.data[0][1] == 321
+    assert meter_reading.units == "kWh"
+    assert meter_reading.data[0][1] == 12345.6
+    assert tariff_list.data[0].display_name == "Standard"
+    assert tariff_list.data[0].effective_date == "2026-07-01 00:00:00"
+
+
+def test_daily_consumption_log_is_decoded() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(200, {"token": "token-123"}),
+            FakeResponse(
+                200,
+                {
+                    "units": "Wh",
+                    "data": [["2026-07-04T00:00:00.00000Z", "7777.0"]],
+                },
+            ),
+        ]
+    )
+    client = glow_api.GlowClient(
+        "user@example.com",
+        "secret",
+        base_url="https://example.test/api/v0-1/",
+        session=session,
+    )
+    resource = glow_api.GlowResource(
+        client,
+        None,
+        {
+            "resourceId": "resource-1",
+            "name": "electricity",
+            "classifier": "electricity.consumption",
+            "description": "electricity consumption DCC SM profile reads",
+            "baseUnit": "Wh",
+        },
+    )
+
+    log_rows = resource.get_daily_consumption_log()
+
+    assert log_rows == [
+        [
+            dt.datetime(2026, 7, 4, 0, 0, tzinfo=dt.timezone.utc),
+            glow_api.GlowReadingValue(7777.0, "Wh"),
+        ]
+    ]

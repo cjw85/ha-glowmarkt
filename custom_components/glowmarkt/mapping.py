@@ -39,6 +39,13 @@ class MeterPlan:
     export_resource: object | None = None
 
 
+def dcc_context_resource(plan: MeterPlan) -> object | None:
+    """Return the canonical resource that determines DCC freshness for a meter."""
+    if getattr(plan.usage_resource, "is_dcc_sourced", False):
+        return plan.usage_resource
+    return None
+
+
 def supply_type(resource) -> str:
     """Return supply type."""
     if resource.classifier.startswith(f"{ELECTRICITY_SUPPLY}."):

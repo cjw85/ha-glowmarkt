@@ -5,6 +5,12 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
+from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from custom_components.glowmarkt import history, mapping
 from custom_components.glowmarkt.glow_api import GlowClient
@@ -45,17 +51,105 @@ def _print_readings(prefix: str, readings, *, show_buckets: bool) -> None:
             print(f"{prefix}  - {when.isoformat()} -> {value.value} {value.unit()}")
 
 
+def _print_recent_readings(
+    prefix: str,
+    readings,
+    *,
+    end: datetime,
+    recent_hours: int,
+) -> None:
+    """Print half-hour buckets from the most recent N-hour window."""
+    if recent_hours <= 0:
+        return
+
+    recent_start = end - timedelta(hours=recent_hours)
+    recent_readings = [reading for reading in readings if reading[0] >= recent_start]
+    if not recent_readings:
+        print(
+            f"{prefix}last {recent_hours}h buckets: none returned in "
+            f"{recent_start.isoformat()} to {end.isoformat()}"
+        )
+        return
+
+    recent_total = _reading_total(recent_readings)
+    unit = recent_readings[0][1].unit()
+    print(
+        f"{prefix}last {recent_hours}h buckets: {recent_total} {unit} from "
+        f"{len(recent_readings)} bucket(s) between "
+        f"{recent_start.isoformat()} and {end.isoformat()}"
+    )
+    for when, value in recent_readings:
+        bucket_end = when + timedelta(minutes=30)
+        print(
+            f"{prefix}  - {when.isoformat()} to {bucket_end.isoformat()} "
+            f"-> {value.value} {value.unit()}"
+        )
+
+
+def _run_catchup_smoke(resource, *, dcc_context_resource=None) -> int:
+    """Trigger one Glow DCC catchup request for a resource."""
+    refresh_resource = dcc_context_resource
+    if refresh_resource is None and getattr(resource, "is_dcc_sourced", False):
+        refresh_resource = resource
+
+    if refresh_resource is None:
+        print("      catchup: skipped (resource is not identified as DCC-backed)")
+        return 0
+
+    try:
+        result = refresh_resource.catch_up()
+    except Exception as ex:  # pylint: disable=broad-except
+        print(f"      catchup failed: {type(ex).__name__}: {ex}")
+        return 1
+
+    valid = getattr(getattr(result, "data", None), "valid", None)
+    print(f"      catchup: requested (valid={valid})")
+    return 1 if valid is False else 0
+
+
 def _run_resource_smoke(
     history_module,
     resource,
     *,
+    catchup: bool,
+    dcc_context_resource,
     history_days: int,
     show_buckets: bool,
+    recent_hours: int,
+    statistic_unit: str | None = None,
+    value_scale: float = 1.0,
 ) -> int:
     """Fetch historical PT30M readings for one Glow resource."""
     failures = 0
+    if catchup:
+        failures += _run_catchup_smoke(
+            resource, dcc_context_resource=dcc_context_resource
+        )
+
     try:
         end = datetime.now().astimezone().replace(minute=0, second=0, microsecond=0)
+        refresh_resource = dcc_context_resource
+        if refresh_resource is None and getattr(resource, "is_dcc_sourced", False):
+            refresh_resource = resource
+        if refresh_resource is not None:
+            if refresh_resource.id != resource.id:
+                print(
+                    "      freshness context: "
+                    f"{refresh_resource.id} | {refresh_resource.classifier}"
+                )
+            last_time = refresh_resource.get_last_time()
+            print(
+                "      last-time: "
+                f"{last_time.isoformat() if last_time is not None else 'none'}"
+            )
+            useful_end = history_module._useful_history_end(end, last_time)
+            if useful_end != end:
+                print(
+                    "      useful history end: "
+                    f"{useful_end.isoformat()} "
+                    f"(requested end {end.isoformat()})"
+                )
+            end = useful_end
         start = end - timedelta(days=history_days)
         print(
             "      query window: "
@@ -72,18 +166,30 @@ def _run_resource_smoke(
         return failures + 1
 
     _print_readings("      ", readings, show_buckets=show_buckets)
+    _print_recent_readings(
+        "      ",
+        readings,
+        end=end,
+        recent_hours=recent_hours,
+    )
     hourly_statistics = (
-        history_module._aggregate_half_hour_readings_to_hourly_statistics(readings)
+        history_module._aggregate_half_hour_readings_to_hourly_statistics(
+            readings,
+            value_scale=value_scale,
+        )
     )
     if hourly_statistics:
+        statistic_unit = statistic_unit or (
+            readings[0][1].unit() if readings else getattr(resource, "base_unit", "")
+        )
         print(
-            "      hourly statistics: "
+            "      hourly statistics for HA: "
             f"{len(hourly_statistics)} row(s), latest cumulative sum "
-            f"{hourly_statistics[-1]['sum']} kWh at "
+            f"{hourly_statistics[-1]['sum']} {statistic_unit} at "
             f"{hourly_statistics[-1]['start'].isoformat()}"
         )
     else:
-        print("      hourly statistics: no importable hourly rows derived")
+        print("      hourly statistics for HA: no importable hourly rows derived")
         failures += 1
     return failures
 
@@ -94,8 +200,9 @@ def main():
         description=(
             "Authenticate to Glowmarkt, apply the integration's canonical resource "
             "selection logic, and fetch historical PT30M electricity import/export "
-            "and gas usage readings plus the derived hourly statistics shape used "
-            "for HA import."
+            "and cost readings plus the derived hourly statistics shape used for "
+            "HA import. Optionally trigger one DCC catchup request per selected "
+            "resource before fetching history."
         )
     )
     parser.add_argument("--username", "-u", required=True, help="Bright username")
@@ -115,6 +222,23 @@ def main():
         "--show-buckets",
         action="store_true",
         help="Print every half-hour bucket returned by Glow.",
+    )
+    parser.add_argument(
+        "--show-last-hours",
+        type=int,
+        default=0,
+        help=(
+            "Print half-hour buckets from the most recent N-hour window within the "
+            "requested history span. Use 24 to inspect the latest day."
+        ),
+    )
+    parser.add_argument(
+        "--catchup",
+        action="store_true",
+        help=(
+            "Trigger one DCC catchup request for each selected canonical resource "
+            "before requesting half-hour history."
+        ),
     )
     args = parser.parse_args()
 
@@ -144,6 +268,12 @@ def main():
         canonical_resources = mapping.select_canonical_resources(
             virtual_entity, resources
         )
+        plans_by_supply = {
+            plan.supply: plan
+            for plan in mapping.plan_virtual_entity_meters(virtual_entity, resources)
+        }
+        electricity_plan = plans_by_supply.get(mapping.ELECTRICITY_SUPPLY)
+        gas_plan = plans_by_supply.get(mapping.GAS_SUPPLY)
 
         electricity = canonical_resources[
             (virtual_entity.id, mapping.ELECTRICITY_SUPPLY)
@@ -151,6 +281,11 @@ def main():
         print("  Canonical electricity selection:")
         if electricity.usage is None:
             print("    import: no canonical import resource selected")
+            if electricity.cost is not None:
+                print(
+                    "    cost: present but skipped because no canonical import "
+                    "resource was selected"
+                )
             if electricity.export is not None:
                 print(
                     "    export: present but skipped because no canonical import "
@@ -159,6 +294,7 @@ def main():
         else:
             for role_name, resource in (
                 ("import", electricity.usage),
+                ("cost", electricity.cost),
                 ("export", electricity.export),
             ):
                 if resource is None:
@@ -170,24 +306,52 @@ def main():
                 failures += _run_resource_smoke(
                     history,
                     resource,
+                    catchup=args.catchup,
+                    dcc_context_resource=(
+                        mapping.dcc_context_resource(electricity_plan)
+                        if electricity_plan is not None
+                        else None
+                    ),
                     history_days=args.history_days,
                     show_buckets=args.show_buckets,
+                    recent_hours=args.show_last_hours,
+                    statistic_unit="GBP" if role_name == "cost" else "kWh",
+                    value_scale=0.01 if role_name == "cost" else 1.0,
                 )
 
         gas = canonical_resources[(virtual_entity.id, mapping.GAS_SUPPLY)]
         print("  Canonical gas selection:")
         if gas.usage is None:
             print("    usage: no canonical gas resource selected")
+            if gas.cost is not None:
+                print(
+                    "    cost: present but skipped because no canonical gas "
+                    "resource was selected"
+                )
             continue
 
-        selected_count += 1
-        print(f"    usage: {_resource_summary(gas.usage)}")
-        failures += _run_resource_smoke(
-            history,
-            gas.usage,
-            history_days=args.history_days,
-            show_buckets=args.show_buckets,
-        )
+        for role_name, resource in (("usage", gas.usage), ("cost", gas.cost)):
+            if resource is None:
+                print(f"    {role_name}: not selected")
+                continue
+
+            selected_count += 1
+            print(f"    {role_name}: {_resource_summary(resource)}")
+            failures += _run_resource_smoke(
+                history,
+                resource,
+                catchup=args.catchup,
+                dcc_context_resource=(
+                    mapping.dcc_context_resource(gas_plan)
+                    if gas_plan is not None
+                    else None
+                ),
+                history_days=args.history_days,
+                show_buckets=args.show_buckets,
+                recent_hours=args.show_last_hours,
+                statistic_unit="GBP" if role_name == "cost" else "kWh",
+                value_scale=0.01 if role_name == "cost" else 1.0,
+            )
 
     if selected_count == 0:
         print("No canonical resources were selected.")

@@ -34,6 +34,16 @@ class FakeGlowResource:
     daily_total: float | None = None
     standing_charge_pence: float = 47.9
     rate_pence: float = 24.5
+    catchup_valid: bool = True
+    last_time: dt.datetime | None = None
+    catchup_calls: int = field(default=0, init=False)
+    last_time_calls: int = field(default=0, init=False)
+
+    @property
+    def is_dcc_sourced(self) -> bool:
+        """Return whether the fake resource should be treated as DCC-backed."""
+        text = " ".join(filter(None, [self.name, self.description])).lower()
+        return "dcc" in text or "profile read" in text
 
     def get_tariff(self):
         """Return a tariff payload in the shape expected by the sensor code."""
@@ -43,6 +53,16 @@ class FakeGlowResource:
                 rate=SimpleNamespace(value=self.rate_pence),
             )
         )
+
+    def catch_up(self):
+        """Return a minimal catchup payload and track invocations."""
+        self.catchup_calls += 1
+        return SimpleNamespace(data=SimpleNamespace(valid=self.catchup_valid))
+
+    def get_last_time(self):
+        """Return the configured latest-available reading timestamp."""
+        self.last_time_calls += 1
+        return self.last_time
 
 
 @dataclass(slots=True)

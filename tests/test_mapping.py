@@ -106,3 +106,24 @@ def test_select_canonical_resources_skips_ambiguous_export(caplog) -> None:
 
     assert selected[(virtual_entity.id, mapping.ELECTRICITY_SUPPLY)].export is None
     assert "multiple equally preferred electricity.export resources" in caplog.text
+
+
+def test_dcc_context_resource_uses_canonical_usage_resource() -> None:
+    virtual_entity = FakeGlowVirtualEntity("ve-1", "Site 1")
+    usage = FakeGlowResource(
+        "dcc-usage",
+        const.ELEC_CONSUMPTION_CLASSIFIER,
+        "electricity consumption DCC SM profile reads",
+    )
+    export = FakeGlowResource(
+        "export-resource",
+        const.ELEC_EXPORT_CLASSIFIER,
+        "electricity energy from active export power",
+    )
+
+    plan = mapping.plan_virtual_entity_meters(
+        virtual_entity,
+        [usage, export],
+    )[0]
+
+    assert mapping.dcc_context_resource(plan) is usage
