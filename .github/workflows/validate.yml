@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+      - name: Install test dependencies
+        run: uv sync --extra dev
+      - name: Run pytest
+        run: uv run pytest
+
+  validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v5
+      - name: HACS Validation
+        uses: hacs/action@22.5.0
+        with:
+          category: integration
+      - name: Hassfest Validation
+        uses: home-assistant/actions/hassfest@master

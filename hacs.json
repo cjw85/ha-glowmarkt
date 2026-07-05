@@ -1,0 +1,6 @@
+{
+    "name": "Glowmarkt",
+    "render_readme": true,
+    "country": ["GB"],
+    "homeassistant": "2025.6.0"
+  }

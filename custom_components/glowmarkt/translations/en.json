@@ -1,0 +1,36 @@
+{
+    "config": {
+        "abort": {
+            "already_configured": "Device is already configured"
+        },
+        "error": {
+            "cannot_connect": "Failed to connect",
+            "invalid_auth": "Invalid authentication",
+            "timeout_connect": "Timeout establishing connection",
+            "unknown": "Unexpected error"
+        },
+        "step": {
+            "user": {
+                "data": {
+                    "password": "Password",
+                    "username": "Email"
+                },
+                "title": "Glowmarkt API access"
+            }
+        }
+    },
+    "options": {
+        "error": {
+            "interval_too_low": "Intervals below 5 minutes are not allowed."
+        },
+        "step": {
+            "init": {
+                "data": {
+                    "daily_interval": "Daily refresh interval (minutes)",
+                    "tariff_interval": "Tariff refresh interval (minutes)"
+                },
+                "title": "Update polling intervals"
+            }
+        }
+    }
+}

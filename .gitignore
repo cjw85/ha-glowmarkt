@@ -1,0 +1,32 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+
+# Build artefacts
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# Virtual environments and local editor state
+.env
+.venv/
+env/
+venv/
+.vscode/
+
+# Test and coverage output
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.hypothesis/
+
+# Type-checker caches
+.mypy_cache/
+.pyre/
+.pytype/
+
+# Local files
+.DS_Store
+GlowmarktAPIDataRetrievalDocumentationIndividualUserForBright.pdf
