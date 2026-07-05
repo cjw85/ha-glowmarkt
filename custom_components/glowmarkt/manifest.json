@@ -1,6 +1,9 @@
 {
   "domain": "glowmarkt",
   "name": "Glowmarkt",
+  "after_dependencies": [
+    "recorder"
+  ],
   "codeowners": [
     "@cjw85"
   ],
