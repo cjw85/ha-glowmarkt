@@ -348,6 +348,51 @@ def test_tariff_payload_is_normalized_to_snake_case_attributes() -> None:
     assert tariff.current_rates.rate.value == 12.3
 
 
+def test_tariff_payload_promotes_live_current_rates_from_data_entries() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(200, {"token": "token-123"}),
+            FakeResponse(
+                200,
+                {
+                    "data": [
+                        {
+                            "currentRates": {
+                                "standingCharge": 51.12,
+                                "rate": 5.49,
+                            }
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    client = glow_api.GlowClient(
+        "user@example.com",
+        "secret",
+        base_url="https://example.test/api/v0-1/",
+        session=session,
+    )
+    resource = glow_api.GlowResource(
+        client,
+        None,
+        {
+            "resourceId": "resource-1",
+            "name": "electricity",
+            "classifier": "electricity.consumption",
+            "description": "electricity consumption",
+            "baseUnit": "kWh",
+        },
+    )
+
+    tariff = resource.get_tariff()
+
+    assert tariff.data[0].current_rates.standing_charge == 51.12
+    assert tariff.data[0].current_rates.rate == 5.49
+    assert tariff.current_rates.standing_charge.value == 51.12
+    assert tariff.current_rates.rate.value == 5.49
+
+
 def test_additional_resource_endpoints_decode_timestamps_and_catchup() -> None:
     session = FakeSession(
         [

@@ -24,9 +24,9 @@ Implementation is based on the published Bright individual-user PDF and the live
 
 - Creates one canonical electricity meter device and one canonical gas meter device per Glow virtual entity.
 - Exposes half-hour electricity import, electricity export, gas usage, and cost data.
-- Exposes `Usage (today)` and `Cost (today)` for supported meters.
-- Exposes `Export (today)` on the canonical electricity meter when Glow provides a direct `electricity.export` resource.
-- Exposes tariff `Standing charge` and `Rate` entities, disabled by default.
+- Exposes opt-in `Usage (today)` and `Cost (today)` sensors for supported meters, disabled by default because Glow's `P1D` day totals can lag or go stale.
+- Exposes opt-in `Export (today)` on the canonical electricity meter when Glow provides a direct `electricity.export` resource.
+- Exposes tariff `Standing charge` and `Rate` entities, enabled by default.
 - Imports canonical half-hourly historical usage, export, and cost data into Home Assistant.
 - Triggers Glow DCC `catchup` requests during the history refresh loop for canonical DCC-backed resources.
 - Uses Glow `last-time` timestamps to avoid importing clearly stale future DCC hours.
@@ -74,8 +74,8 @@ Even with Glow DCC `catchup` enabled, real-world data availability still appears
 
 After adding or updating the integration, the quickest verification path is:
 
-1. Open the device page and confirm the canonical daily entities appear under your electricity meter:
-   `Usage (today)`, `Export (today)` if available, and `Cost (today)`.
+1. Open the device page and confirm `Rate` and `Standing charge` appear under your electricity meter.
+   `Usage (today)`, `Export (today)` if available, and `Cost (today)` exist but are disabled by default because Glow's day totals can be stale.
 2. Open `Developer Tools -> Statistics` and search for `glowmarkt` or `electricity_import`.
 3. Confirm graph-icon statistics exist for the canonical streams, for example:
    `DCC Sourced electricity import`, `DCC Sourced electricity export`, `DCC Sourced electricity cost`, `DCC Sourced gas usage`, and `DCC Sourced gas cost`.
@@ -85,7 +85,7 @@ After adding or updating the integration, the quickest verification path is:
 
 The integration backfills and refreshes electricity import/export/cost and gas usage/cost as hourly long-term statistics.
 It uses recorder statistics not Sensors to record data.
-The daily entities still exist as normal sensors, but they reset each day and are therefore not suitable as direct Energy dashboard sources.
+The daily entities still exist as opt-in normal sensors, but they reset each day, rely on Glow's `P1D` path, and are therefore not suitable as direct Energy dashboard sources.
 
 For a grid connection, select the graph-icon statistics rather than the daily sensors:
 
@@ -111,7 +111,7 @@ Home Assistant distinguishes between entity-based dashboard cards and statistics
 > Glow provides values as delayed half-hour history buckets, not as a trustworthy live meter state.
 > By default Glow's data is updated overnight; the integration attempts to refresh it more promptly.
 > A normal Home Assistant sensor is timestamped when Home Assistant observed the state change, not when the underlying half-hour interval actually happened, so late or corrected Glow buckets would be plotted at the wrong time if they were exposed as canonical sensor history.
-> Normal sensors are used only for derived day-level summaries such as `Usage (today)` and `Export (today)`.
+> Normal sensors are used only for opt-in derived day-level summaries such as `Usage (today)` and `Export (today)`.
 
 The imported Glow history streams are external long-term statistics.
 They live in recorder's statistics store rather than as standalone entities, so they do not appear everywhere that normal entities do.

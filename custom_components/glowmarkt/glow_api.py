@@ -47,6 +47,41 @@ def _namespace(value: Any) -> Any:
     return normalized
 
 
+def _tariff_value_object(value: Any) -> Any:
+    """Wrap scalar tariff values in the nested structure the integration expects."""
+    if value is None or isinstance(value, dict):
+        return value
+    return {"value": value}
+
+
+def _canonical_tariff_payload(value: Any) -> Any:
+    """Lift Glow tariff variants into one stable top-level current_rates shape."""
+    normalized = _normalize_value(value)
+    if not isinstance(normalized, dict):
+        return normalized
+
+    current_rates = normalized.get("current_rates")
+    if not isinstance(current_rates, dict):
+        for item in normalized.get("data", []):
+            if isinstance(item, dict) and isinstance(item.get("current_rates"), dict):
+                current_rates = item["current_rates"]
+                break
+
+    if not isinstance(current_rates, dict):
+        return normalized
+
+    canonical_current_rates = dict(current_rates)
+    for key in ("standing_charge", "rate"):
+        if key in canonical_current_rates:
+            canonical_current_rates[key] = _tariff_value_object(
+                canonical_current_rates[key]
+            )
+
+    canonical_payload = dict(normalized)
+    canonical_payload["current_rates"] = canonical_current_rates
+    return canonical_payload
+
+
 def _coerce_glow_datetime(value: date | datetime) -> datetime:
     """Return a datetime suitable for Glow request parameter formatting."""
     if isinstance(value, datetime):
@@ -442,7 +477,7 @@ class GlowResource:
 
     def get_tariff(self):
         """Fetch the current tariff document for this resource."""
-        return _namespace(self._resource_json("tariff"))
+        return _namespace(_canonical_tariff_payload(self._resource_json("tariff")))
 
     def get_tariff_list(self):
         """Fetch the resource's tariff-history payload."""

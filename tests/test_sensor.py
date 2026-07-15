@@ -125,8 +125,8 @@ async def test_setup_attaches_export_to_the_canonical_electricity_meter(
     export_entity_id = _entity_id(hass, "dcc-export_export_today")
     gas_usage_entity_id = _entity_id(hass, "gas-usage_usage_today")
     gas_cost_entity_id = _entity_id(hass, "gas-cost_cost_today")
-    standing_entity_id = _entity_id(hass, "dcc-usage_standing_charge")
-    rate_entity_id = _entity_id(hass, "dcc-usage_rate")
+    standing_entity_id = _entity_id(hass, "dcc-cost_standing_charge")
+    rate_entity_id = _entity_id(hass, "dcc-cost_rate")
 
     assert usage_entity_id is not None
     assert cost_entity_id is not None
@@ -135,12 +135,6 @@ async def test_setup_attaches_export_to_the_canonical_electricity_meter(
     assert gas_cost_entity_id is not None
     assert standing_entity_id is not None
     assert rate_entity_id is not None
-
-    assert float(hass.states.get(usage_entity_id).state) == 12.34
-    assert float(hass.states.get(cost_entity_id).state) == 1.23
-    assert float(hass.states.get(export_entity_id).state) == 5.67
-    assert float(hass.states.get(gas_usage_entity_id).state) == 8.5
-    assert float(hass.states.get(gas_cost_entity_id).state) == 0.89
 
     electricity_device = device_registry.async_get_device(
         identifiers={(DOMAIN, "dcc-usage")}
@@ -155,12 +149,18 @@ async def test_setup_attaches_export_to_the_canonical_electricity_meter(
     assert export_device is None
 
     usage_entry = entity_registry.async_get(usage_entity_id)
+    cost_entry = entity_registry.async_get(cost_entity_id)
     export_entry = entity_registry.async_get(export_entity_id)
+    gas_usage_entry = entity_registry.async_get(gas_usage_entity_id)
+    gas_cost_entry = entity_registry.async_get(gas_cost_entity_id)
     standing_entry = entity_registry.async_get(standing_entity_id)
     rate_entry = entity_registry.async_get(rate_entity_id)
 
     assert usage_entry is not None
+    assert cost_entry is not None
     assert export_entry is not None
+    assert gas_usage_entry is not None
+    assert gas_cost_entry is not None
     assert standing_entry is not None
     assert rate_entry is not None
 
@@ -168,10 +168,27 @@ async def test_setup_attaches_export_to_the_canonical_electricity_meter(
     assert export_entry.original_name == "Export (today)"
     assert usage_entry.device_id == electricity_device.id
     assert export_entry.device_id == electricity_device.id
-    assert standing_entry.disabled_by == RegistryEntryDisabler.INTEGRATION
-    assert rate_entry.disabled_by == RegistryEntryDisabler.INTEGRATION
-    assert hass.states.get(standing_entity_id) is None
-    assert hass.states.get(rate_entity_id) is None
+    assert usage_entry.disabled_by == RegistryEntryDisabler.INTEGRATION
+    assert cost_entry.disabled_by == RegistryEntryDisabler.INTEGRATION
+    assert export_entry.disabled_by == RegistryEntryDisabler.INTEGRATION
+    assert gas_usage_entry.disabled_by == RegistryEntryDisabler.INTEGRATION
+    assert gas_cost_entry.disabled_by == RegistryEntryDisabler.INTEGRATION
+    assert standing_entry.disabled_by is None
+    assert rate_entry.disabled_by is None
+    assert hass.states.get(usage_entity_id) is None
+    assert hass.states.get(cost_entity_id) is None
+    assert hass.states.get(export_entity_id) is None
+    assert hass.states.get(gas_usage_entity_id) is None
+    assert hass.states.get(gas_cost_entity_id) is None
+
+    standing_state = hass.states.get(standing_entity_id)
+    rate_state = hass.states.get(rate_entity_id)
+    assert standing_state is not None
+    assert rate_state is not None
+    assert float(standing_state.state) == 0.479
+    assert standing_state.attributes["unit_of_measurement"] == "GBP/day"
+    assert float(rate_state.state) == 0.245
+    assert rate_state.attributes["unit_of_measurement"] == "GBP/kWh"
 
 
 async def test_setup_skips_ambiguous_electricity_without_guessing(
@@ -263,3 +280,43 @@ async def test_setup_keeps_non_export_accounts_working(
     assert _entity_id(hass, "gas-usage_usage_today") is not None
     assert _entity_id(hass, "gas-cost_cost_today") is not None
     assert _entity_id(hass, "electricity-export_export_today") is None
+
+
+async def test_tariff_entities_fall_back_to_usage_resource_without_cost(
+    hass,
+) -> None:
+    client = FakeGlowClient(
+        [
+            FakeGlowVirtualEntity(
+                "ve-1",
+                "Site 1",
+                resources=[
+                    FakeGlowResource(
+                        "electricity-usage",
+                        ELEC_CONSUMPTION_CLASSIFIER,
+                        "electricity consumption DCC SM profile reads",
+                        daily_total=4.2,
+                    )
+                ],
+            )
+        ]
+    )
+
+    await _setup_integration(hass, client)
+
+    usage_entity_id = _entity_id(hass, "electricity-usage_usage_today")
+    standing_entity_id = _entity_id(hass, "electricity-usage_standing_charge")
+    rate_entity_id = _entity_id(hass, "electricity-usage_rate")
+
+    assert usage_entity_id is not None
+    assert standing_entity_id is not None
+    assert rate_entity_id is not None
+    assert hass.states.get(usage_entity_id) is None
+
+    standing_state = hass.states.get(standing_entity_id)
+    rate_state = hass.states.get(rate_entity_id)
+    assert standing_state is not None
+    assert rate_state is not None
+    assert float(standing_state.state) == 0.479
+    assert standing_state.attributes["unit_of_measurement"] == "GBP/day"
+    assert float(rate_state.state) == 0.245

@@ -166,6 +166,7 @@ USAGE_SENSOR = GlowSensorSpec(
     device_class=SensorDeviceClass.ENERGY,
     state_class=SensorStateClass.TOTAL_INCREASING,
     icon_fn=_usage_icon,
+    enabled_default=False,
     value_extractor=_round_usage_value,
 )
 
@@ -175,6 +176,7 @@ EXPORT_SENSOR = GlowSensorSpec(
     native_unit=UnitOfEnergy.KILO_WATT_HOUR,
     device_class=SensorDeviceClass.ENERGY,
     state_class=SensorStateClass.TOTAL_INCREASING,
+    enabled_default=False,
     value_extractor=_round_usage_value,
 )
 
@@ -184,15 +186,15 @@ COST_SENSOR = GlowSensorSpec(
     native_unit="GBP",
     device_class=SensorDeviceClass.MONETARY,
     state_class=SensorStateClass.TOTAL,
+    enabled_default=False,
     value_extractor=_round_cost_value,
 )
 
 STANDING_SENSOR = GlowSensorSpec(
     unique_id_suffix="standing_charge",
     name="Standing charge",
-    native_unit="GBP",
-    device_class=SensorDeviceClass.MONETARY,
-    enabled_default=False,
+    native_unit="GBP/day",
+    icon="mdi:cash-clock",
     value_extractor=_standing_charge_value,
 )
 
@@ -201,7 +203,6 @@ RATE_SENSOR = GlowSensorSpec(
     name="Rate",
     native_unit="GBP/kWh",
     icon="mdi:cash-multiple",
-    enabled_default=False,
     value_extractor=_rate_value,
 )
 
@@ -458,6 +459,7 @@ def _build_meter_entities(
 ) -> list[GlowSensor]:
     """Build all entities for one canonical physical meter."""
     meter_resource = plan.usage_resource
+    tariff_resource = plan.cost_resource or plan.usage_resource
     usage_sensor = GlowSensor(
         _daily_coordinator_for_resource(
             hass, plan.usage_resource, daily_interval, daily_coordinators
@@ -469,20 +471,20 @@ def _build_meter_entities(
     entities = [usage_sensor]
 
     tariff_coordinator = _tariff_coordinator_for_resource(
-        hass, plan.usage_resource, tariff_interval, tariff_coordinators
+        hass, tariff_resource, tariff_interval, tariff_coordinators
     )
     entities.extend(
         [
             GlowSensor(
                 tariff_coordinator,
-                plan.usage_resource,
+                tariff_resource,
                 plan.virtual_entity,
                 STANDING_SENSOR,
                 device_resource=meter_resource,
             ),
             GlowSensor(
                 tariff_coordinator,
-                plan.usage_resource,
+                tariff_resource,
                 plan.virtual_entity,
                 RATE_SENSOR,
                 device_resource=meter_resource,
