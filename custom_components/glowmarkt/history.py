@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import partial
 import logging
 import re
@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .reconcile import IncompleteHistory, reconcile_statistics
 from .glow_api import get_resource_readings
 from .mapping import (
     ELECTRICITY_SUPPLY,
@@ -75,6 +76,7 @@ _HISTORY_CHUNK_DAYS = 10
 _INITIAL_HISTORY_DAYS = 400
 _RECENT_HISTORY_DAYS = 7
 _REFRESH_INTERVAL = timedelta(minutes=30)
+_FULL_REFRESH_INTERVAL = timedelta(days=1)
 _READINGS_END_EPSILON = timedelta(seconds=1)
 
 
@@ -162,7 +164,7 @@ def _history_metadata(target: HistoryStatisticTarget):
 
 def _history_window_end(now: datetime | None = None) -> datetime:
     """Return the most recent completed top-of-hour boundary."""
-    when = now or dt_util.now()
+    when = (now or dt_util.now()).astimezone(timezone.utc)
     return when.replace(minute=0, second=0, microsecond=0)
 
 
@@ -217,76 +219,26 @@ def _fetch_half_hour_history(
             break
         chunk = get_resource_readings(resource, window_start, query_end, "PT30M", "sum")
         for when, value in chunk:
+            when = when.astimezone(timezone.utc)
+            if not window_start <= when < window_end:
+                continue
+            if when in readings_by_start and readings_by_start[when][1].value != value.value:
+                raise IncompleteHistory("Conflicting duplicate reading from Glow")
             readings_by_start[when] = [when, value]
         window_start = window_end
 
     return [readings_by_start[when] for when in sorted(readings_by_start)]
 
 
-def _aggregate_half_hour_readings_to_hourly_statistics(
-    readings,
-    *,
-    value_scale: float = 1.0,
-    starting_sum: float = 0.0,
-):
-    """Aggregate PT30M readings into hourly cumulative sums for recorder import."""
-    if not readings:
-        return []
-
-    hourly_totals: dict[datetime, float] = {}
-    for when, value in sorted(readings, key=lambda item: item[0]):
-        hour_start = when.replace(minute=0, second=0, microsecond=0)
-        hourly_totals[hour_start] = hourly_totals.get(hour_start, 0.0) + (
-            float(value.value) * value_scale
-        )
-
-    statistics = []
-    cumulative_sum = float(starting_sum)
-    for hour_start in sorted(hourly_totals):
-        cumulative_sum += hourly_totals[hour_start]
-        statistics.append(
-            {
-                "start": hour_start,
-                "sum": round(cumulative_sum, 6),
-            }
-        )
-
-    return statistics
-
-
-def _previous_sum_lookup_start(start: datetime) -> datetime:
-    """Return a small lookback window for finding the prior hourly sum row."""
-    return start - timedelta(hours=2)
-
-
-async def _existing_statistic_sum_before(
-    hass: HomeAssistant,
-    statistics_during_period,
-    statistic_id: str,
-    start: datetime,
-) -> float:
-    """Return the latest known cumulative sum before a refresh window."""
+async def _existing_statistic_rows(hass, statistics_during_period, statistic_id, end):
+    """Read the full retained series, including the baseline and later tail."""
     rows = await _async_recorder_executor_job(
         hass,
-        partial(
-            statistics_during_period,
-            hass,
-            _previous_sum_lookup_start(start),
-            start,
-            {statistic_id},
-            "hour",
-            None,
-            {"sum"},
-        )
+        partial(statistics_during_period, hass,
+                datetime(1970, 1, 1, tzinfo=timezone.utc), end,
+                {statistic_id}, "hour", None, {"sum"}),
     )
-    statistic_rows = rows.get(statistic_id, [])
-    if not statistic_rows:
-        return 0.0
-
-    prior_sum = statistic_rows[-1].get("sum")
-    if prior_sum is None:
-        return 0.0
-    return float(prior_sum)
+    return rows.get(statistic_id, [])
 
 
 def _select_history_targets(
@@ -451,6 +403,7 @@ async def _async_target_history_end(
 async def async_import_history_statistics(
     hass: HomeAssistant,
     glow_client,
+    full_refresh_at: dict[str, datetime] | None = None,
 ) -> bool:
     """Import Glow electricity and gas history into Home Assistant statistics."""
     try:
@@ -508,13 +461,16 @@ async def async_import_history_statistics(
         return True
 
     end = _history_window_end()
+    if full_refresh_at is None:
+        full_refresh_at = {}
     target_end_by_context_resource_id: dict[str, datetime] = {}
     for target in targets:
-        history_days = (
-            _RECENT_HISTORY_DAYS
-            if target.statistic_id in existing_metadata
-            else _INITIAL_HISTORY_DAYS
+        last_full = full_refresh_at.get(target.statistic_id)
+        full_refresh = (
+            target.statistic_id not in existing_metadata or last_full is None
+            or end - last_full >= _FULL_REFRESH_INTERVAL
         )
+        history_days = _INITIAL_HISTORY_DAYS if full_refresh else _RECENT_HISTORY_DAYS
         context_resource = target.dcc_context_resource
         context_resource_id = getattr(context_resource, "id", None)
         if (
@@ -549,28 +505,25 @@ async def async_import_history_statistics(
             )
             continue
 
-        starting_sum = 0.0
-        if target.statistic_id in existing_metadata:
-            try:
-                starting_sum = await _existing_statistic_sum_before(
-                    hass,
-                    statistics_during_period,
-                    target.statistic_id,
-                    start,
-                )
-            except Exception as ex:  # pylint: disable=broad-except
-                _LOGGER.warning(
-                    "Failed to query existing statistics baseline for %s: %s",
-                    target.statistic_id,
-                    ex,
-                )
-                starting_sum = 0.0
+        # Rate-limit full sweeps even if reconciliation needs more upstream data.
+        # A successful fetch is not proof that the data is complete.
+        if full_refresh:
+            full_refresh_at[target.statistic_id] = end
 
-        statistics = _aggregate_half_hour_readings_to_hourly_statistics(
-            readings,
-            value_scale=target.value_scale,
-            starting_sum=starting_sum,
-        )
+        try:
+            # Query failures abort this target; zero is not a safe fallback.
+            existing_rows = await _existing_statistic_rows(
+                hass, statistics_during_period, target.statistic_id, end
+            )
+            statistics = reconcile_statistics(
+                readings, existing_rows, value_scale=target.value_scale
+            )
+        except Exception as ex:  # pylint: disable=broad-except
+            _LOGGER.warning(
+                "Leaving %s unchanged: history reconciliation failed: %s",
+                target.statistic_id, ex,
+            )
+            continue
         if not statistics:
             _LOGGER.debug(
                 "No PT30M history returned for %s in %s day window.",
@@ -600,9 +553,10 @@ async def async_history_statistics_loop(
     glow_client,
 ) -> None:
     """Continuously refresh imported Glow energy history."""
+    full_refresh_at: dict[str, datetime] = {}
     try:
         while True:
-            if not await async_import_history_statistics(hass, glow_client):
+            if not await async_import_history_statistics(hass, glow_client, full_refresh_at):
                 return
             await asyncio.sleep(_REFRESH_INTERVAL.total_seconds())
     except asyncio.CancelledError:

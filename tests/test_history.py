@@ -118,9 +118,9 @@ def test_aggregate_half_hour_readings_to_hourly_statistics_applies_starting_sum(
         fake_reading(dt.datetime(2026, 7, 1, 2, 30, tzinfo=timezone), 0.5),
     ]
 
-    statistics = history._aggregate_half_hour_readings_to_hourly_statistics(
+    statistics = history.reconcile_statistics(
         readings,
-        starting_sum=1.0,
+        [{"start": dt.datetime(2026, 7, 1, 0, 0, tzinfo=timezone), "sum": 1.0}],
     )
 
     assert statistics == [
@@ -136,9 +136,8 @@ def test_aggregate_half_hour_readings_to_hourly_statistics_scales_values() -> No
         fake_reading(dt.datetime(2026, 7, 1, 1, 30, tzinfo=timezone), 20, "pence"),
     ]
 
-    statistics = history._aggregate_half_hour_readings_to_hourly_statistics(
-        readings,
-        value_scale=0.01,
+    statistics = history.reconcile_statistics(
+        readings, [], value_scale=0.01,
     )
 
     assert statistics == [
@@ -559,9 +558,10 @@ async def test_async_import_history_statistics_preserves_cumulative_sum_on_refre
             return_value=dt.datetime(2026, 7, 5, 0, 0, tzinfo=timezone),
         ),
     ):
-        assert await history.async_import_history_statistics(hass, client) is True
+        refresh_state = {}
+        assert await history.async_import_history_statistics(hass, client, refresh_state) is True
         await async_wait_recording_done(hass)
-        assert await history.async_import_history_statistics(hass, client) is True
+        assert await history.async_import_history_statistics(hass, client, refresh_state) is True
 
     await async_wait_recording_done(hass)
 
